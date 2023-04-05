@@ -9,6 +9,9 @@ edition = "2021"
 aws-config = "0.55.0"
 aws-sdk-s3 = "0.25.0"
 clap = { version = "4.2.1", features = ["derive"] }
+hex = "0.4.3"
+rand = { version = "0.8.5", features = ["small_rng"] }
+ring = "0.16.20"
 tokio = { version = "1.27.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
