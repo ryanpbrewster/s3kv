@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use aws_sdk_s3::primitives::ByteStream;
 use hex::ToHex;
 use integer_encoding::VarInt;
+use tracing::debug;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub struct Location {
@@ -10,10 +11,11 @@ pub struct Location {
 }
 impl Location {
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf =
-            Vec::with_capacity(self.block_id.required_space() + self.offset.required_space());
-        self.block_id.encode_var(&mut buf);
-        self.offset.encode_var(&mut buf);
+        let a = self.block_id.required_space();
+        let b = self.offset.required_space();
+        let mut buf = vec![0; a + b];
+        self.block_id.encode_var(&mut buf[..a]);
+        self.offset.encode_var(&mut buf[a..]);
         buf
     }
 }
@@ -32,16 +34,24 @@ pub struct S3BlockWriter {
     underlying: aws_sdk_s3::Client,
     buf: Vec<u8>,
     block_size: usize,
+    bucket: String,
     prefix: String,
     cur: Location,
 }
+pub struct S3BlockWriterArgs {
+    pub client: aws_sdk_s3::Client,
+    pub bucket: String,
+    pub prefix: String,
+    pub block_size: usize,
+}
 impl S3BlockWriter {
-    pub fn new(client: aws_sdk_s3::Client, block_size: usize, prefix: String) -> Self {
+    pub fn new(args: S3BlockWriterArgs) -> Self {
         Self {
-            underlying: client,
-            buf: Vec::with_capacity(block_size),
-            block_size,
-            prefix,
+            underlying: args.client,
+            buf: Vec::with_capacity(args.block_size),
+            block_size: args.block_size,
+            bucket: args.bucket,
+            prefix: args.prefix,
             cur: Location::default(),
         }
     }
@@ -64,9 +74,12 @@ impl BlockWriter for S3BlockWriter {
             return Ok(());
         }
         let compressed = zstd::bulk::compress(&self.buf, 0)?;
+        self.buf.clear();
         let name: String = self.cur.block_id.encode_var_vec().encode_hex();
+        debug!("pushing block {}", name);
         self.underlying
             .put_object()
+            .bucket(&self.bucket)
             .key(format!("{}/{}", self.prefix, name))
             .body(ByteStream::from(compressed))
             .send()

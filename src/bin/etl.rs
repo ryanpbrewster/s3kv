@@ -7,8 +7,9 @@ use std::{
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::{config::Region, primitives::ByteStream, Client};
 use clap::Parser;
-use s3kv::block::{BlockWriter, S3BlockWriter};
-use tracing::log::info;
+use rocksdb::SstFileWriter;
+use s3kv::block::{BlockWriter, S3BlockWriter, S3BlockWriterArgs};
+use tracing::{debug, log::info};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -40,17 +41,18 @@ async fn main() -> anyhow::Result<()> {
     let shared_config = aws_config::from_env().region(region_provider).load().await;
     let client = Client::new(&shared_config);
 
-    let index_file = tempfile::NamedTempFile::new()?;
+    let db_dir = tempfile::TempDir::new()?;
     let mut db_opts = rocksdb::Options::default();
+    db_opts.create_if_missing(true);
     db_opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
-    let mut index_writer = rocksdb::SstFileWriter::create(&db_opts);
-    index_writer.open(index_file.path())?;
+    let db = rocksdb::DB::open(&db_opts, db_dir.path())?;
 
-    let mut block_writer = S3BlockWriter::new(
-        client.clone(),
-        args.block_size,
-        format!("{}/block", args.prefix),
-    );
+    let mut block_writer = S3BlockWriter::new(S3BlockWriterArgs {
+        client: client.clone(),
+        block_size: args.block_size,
+        bucket: args.bucket.clone(),
+        prefix: format!("{}/block", args.prefix),
+    });
 
     info!("opening {:?}", args.input);
     let fin = BufReader::new(File::open(args.input)?);
@@ -66,17 +68,28 @@ async fn main() -> anyhow::Result<()> {
             .unwrap()
             .as_str()
             .unwrap();
-        index_writer.put(primary_key, loc.encode())?;
+        db.put(primary_key, loc.encode())?;
     }
     block_writer.flush().await?;
+    db.flush()?;
 
+    debug!("rewriting index");
+    let index_file = tempfile::NamedTempFile::new()?;
+    let mut index_writer = SstFileWriter::create(&db_opts);
+    index_writer.open(index_file.path())?;
+    for entry in db.iterator(rocksdb::IteratorMode::Start) {
+        let (k, v) = entry?;
+        index_writer.put(k, v)?;
+    }
     index_writer.finish()?;
+    debug!("pushing index default.sst");
     let index_body = ByteStream::read_from()
         .path(index_file.path())
         .build()
         .await?;
     client
         .put_object()
+        .bucket(&args.bucket)
         .key(format!("{}/index/default.sst", args.prefix))
         .body(index_body)
         .send()
