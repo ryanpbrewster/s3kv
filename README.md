@@ -1,4 +1,6 @@
-# Benchmarks
+# Read Benchmarks
+
+From a c7g.xlarge machine in the same region:
 
 fetch_random on ~1 MB blocks (between 112-1700 KB, depending on compresison ratio):
 ```
