@@ -11,6 +11,7 @@ async-trait = "0.1.68"
 aws-config = "0.55.0"
 aws-sdk-s3 = "0.25.0"
 clap = { version = "4.2.1", features = ["derive"] }
+hdrhistogram = "7.5.2"
 hex = "0.4.3"
 integer-encoding = "3.0.4"
 lru = "0.10.0"

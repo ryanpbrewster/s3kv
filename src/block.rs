@@ -1,7 +1,8 @@
-use std::{io::Read, num::NonZeroUsize};
+use std::{io::Read, num::NonZeroUsize, time::Instant};
 
 use async_trait::async_trait;
 use aws_sdk_s3::primitives::ByteStream;
+use hdrhistogram::Histogram;
 use hex::ToHex;
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use lru::LruCache;
@@ -9,8 +10,8 @@ use tracing::debug;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub struct Location {
-    block_id: usize,
-    offset: usize,
+    pub block_id: usize,
+    pub offset: usize,
 }
 impl Location {
     pub fn encode(&self) -> Vec<u8> {
@@ -112,6 +113,7 @@ pub struct S3BlockReader {
     prefix: String,
     block_size: usize,
     cache: LruCache<usize, Option<Vec<u8>>>,
+    stats: Histogram<u32>,
 }
 pub struct S3BlockReaderArgs {
     pub client: aws_sdk_s3::Client,
@@ -128,6 +130,7 @@ impl S3BlockReader {
             prefix: args.prefix,
             block_size: args.block_size,
             cache: LruCache::new(NonZeroUsize::new(args.cache_size).unwrap()),
+            stats: Histogram::new(5).unwrap(),
         }
     }
     async fn fetch_block(&mut self, block_id: usize) -> anyhow::Result<&[u8]> {
@@ -135,6 +138,7 @@ impl S3BlockReader {
         if block.is_none() {
             let name: String = block_id.encode_var_vec().encode_hex();
             debug!("fetching block {}", name);
+            let start = Instant::now();
             let resp = self
                 .underlying
                 .get_object()
@@ -147,8 +151,15 @@ impl S3BlockReader {
             let size = zstd::bulk::decompress_to_buffer(&compressed, &mut buf)?;
             buf.truncate(size);
             block.replace(buf);
+            self.stats
+                .record(start.elapsed().as_micros() as u64)
+                .unwrap();
         }
         Ok(block.as_ref().unwrap())
+    }
+
+    pub fn stats(&mut self) -> &Histogram<u32> {
+        &self.stats
     }
 }
 #[async_trait]

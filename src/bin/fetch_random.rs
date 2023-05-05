@@ -1,10 +1,10 @@
-use std::io::Write;
+use std::{collections::HashSet, io::Write};
 
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::{config::Region, Client};
 use clap::Parser;
 use hdrhistogram::Histogram;
-use rocksdb::{IteratorMode, ReadOptions};
+use rocksdb::IteratorMode;
 use s3kv::block::{BlockReader, Location, S3BlockReader, S3BlockReaderArgs};
 use tracing::debug;
 
@@ -23,18 +23,6 @@ struct Args {
 
     #[arg(long, default_value_t = 1_000_000)]
     block_size: usize,
-
-    #[arg(long)]
-    start: Option<String>,
-
-    #[arg(long)]
-    end: Option<String>,
-
-    #[arg(long, default_value_t = false)]
-    keys_only: bool,
-
-    #[arg(long, default_value_t = false)]
-    quiet: bool,
 }
 
 #[tokio::main]
@@ -74,39 +62,28 @@ async fn main() -> anyhow::Result<()> {
         cache_size: 1,
     });
 
-    let mut read_opts = ReadOptions::default();
-    if let Some(start) = args.start {
-        read_opts.set_iterate_lower_bound(start.as_bytes());
-    }
-    if let Some(end) = args.end {
-        read_opts.set_iterate_upper_bound(end.as_bytes());
-    }
-    for entry in db.iterator_opt(IteratorMode::Start, read_opts) {
-        let (k, v) = entry?;
+    let mut block_ids = HashSet::new();
+    for entry in db.iterator(IteratorMode::Start) {
+        let (_, v) = entry?;
         let loc = Location::decode(&v)?;
-
-        if args.keys_only {
-            if !args.quiet {
-                println!("{} --> {:?}", std::str::from_utf8(&k)?, loc);
-            }
-        } else {
-            let record = block_reader.fetch(&loc).await?;
-            if !args.quiet {
-                println!(
-                    "{} -> {}",
-                    std::str::from_utf8(&k)?,
-                    std::str::from_utf8(&record)?
-                );
-            }
-        }
+        block_ids.insert(loc.block_id);
     }
 
-    let stats: &Histogram<u32> = block_reader.stats();
-    debug!(
-        "fetches={} mean={} p99={}",
-        stats.len(),
-        stats.mean(),
-        stats.value_at_quantile(0.99)
-    );
-    Ok(())
+    loop {
+        for &block_id in &block_ids {
+            let _ = block_reader
+                .fetch(&Location {
+                    block_id,
+                    offset: 0,
+                })
+                .await?;
+        }
+        let stats: &Histogram<u32> = block_reader.stats();
+        debug!(
+            "fetches={} mean={} p99={}",
+            stats.len(),
+            stats.mean(),
+            stats.value_at_quantile(0.99)
+        );
+    }
 }
