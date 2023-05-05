@@ -1,9 +1,10 @@
-use std::io::Read;
+use std::{io::Read, num::NonZeroUsize};
 
 use async_trait::async_trait;
 use aws_sdk_s3::primitives::ByteStream;
 use hex::ToHex;
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
+use lru::LruCache;
 use tracing::debug;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
@@ -109,14 +110,15 @@ pub struct S3BlockReader {
     underlying: aws_sdk_s3::Client,
     bucket: String,
     prefix: String,
-    buf: Vec<u8>,
-    cur_block_id: Option<usize>,
+    block_size: usize,
+    cache: LruCache<usize, Option<Vec<u8>>>,
 }
 pub struct S3BlockReaderArgs {
     pub client: aws_sdk_s3::Client,
     pub bucket: String,
     pub prefix: String,
     pub block_size: usize,
+    pub cache_size: usize,
 }
 impl S3BlockReader {
     pub fn new(args: S3BlockReaderArgs) -> Self {
@@ -124,35 +126,37 @@ impl S3BlockReader {
             underlying: args.client,
             bucket: args.bucket,
             prefix: args.prefix,
-            buf: vec![0; args.block_size],
-            cur_block_id: None,
+            block_size: args.block_size,
+            cache: LruCache::new(NonZeroUsize::new(args.cache_size).unwrap()),
         }
     }
-    async fn ensure(&mut self, block_id: usize) -> anyhow::Result<()> {
-        if self.cur_block_id == Some(block_id) {
-            return Ok(());
+    async fn fetch_block(&mut self, block_id: usize) -> anyhow::Result<&[u8]> {
+        let block = self.cache.get_or_insert_mut(block_id, || None);
+        if block.is_none() {
+            let name: String = block_id.encode_var_vec().encode_hex();
+            debug!("fetching block {}", name);
+            let resp = self
+                .underlying
+                .get_object()
+                .bucket(&self.bucket)
+                .key(format!("{}/{}", self.prefix, name))
+                .send()
+                .await?;
+            let compressed = resp.body.collect().await?.to_vec();
+            let mut buf = vec![0; self.block_size];
+            let size = zstd::bulk::decompress_to_buffer(&compressed, &mut buf)?;
+            buf.truncate(size);
+            block.replace(buf);
         }
-        let name: String = block_id.encode_var_vec().encode_hex();
-        debug!("fetching block {}", name);
-        let resp = self
-            .underlying
-            .get_object()
-            .bucket(&self.bucket)
-            .key(format!("{}/{}", self.prefix, name))
-            .send()
-            .await?;
-        let compressed = resp.body.collect().await?.to_vec();
-        zstd::bulk::decompress_to_buffer(&compressed, &mut self.buf)?;
-        self.cur_block_id = Some(block_id);
-        Ok(())
+        Ok(block.as_ref().unwrap())
     }
 }
 #[async_trait]
 impl BlockReader for S3BlockReader {
     async fn fetch(&mut self, loc: &Location) -> anyhow::Result<Vec<u8>> {
-        self.ensure(loc.block_id).await?;
+        let block = self.fetch_block(loc.block_id).await?;
 
-        let mut cursor = std::io::Cursor::new(&self.buf);
+        let mut cursor = std::io::Cursor::new(block);
         cursor.set_position(loc.offset as u64);
         let record_size: usize = cursor.read_varint()?;
         let mut record = vec![0; record_size];

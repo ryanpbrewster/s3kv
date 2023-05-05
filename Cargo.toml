@@ -13,6 +13,7 @@ aws-sdk-s3 = "0.25.0"
 clap = { version = "4.2.1", features = ["derive"] }
 hex = "0.4.3"
 integer-encoding = "3.0.4"
+lru = "0.10.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 ring = "0.16.20"
 rocksdb = "0.20.1"

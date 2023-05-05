@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
         bucket: args.bucket.clone(),
         prefix: format!("{}/block", args.prefix),
         block_size: args.block_size,
+        cache_size: 2,
     });
 
     let mut read_opts = ReadOptions::default();
