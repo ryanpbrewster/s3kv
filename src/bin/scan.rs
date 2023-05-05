@@ -3,7 +3,6 @@ use std::io::Write;
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::{config::Region, Client};
 use clap::Parser;
-use hdrhistogram::Histogram;
 use rocksdb::{IteratorMode, ReadOptions};
 use s3kv::block::{BlockReader, Location, S3BlockReader, S3BlockReaderArgs};
 use tracing::debug;
@@ -100,13 +99,5 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-
-    let stats: &Histogram<u32> = block_reader.stats();
-    debug!(
-        "fetches={} mean={} p99={}",
-        stats.len(),
-        stats.mean(),
-        stats.value_at_quantile(0.99)
-    );
     Ok(())
 }

@@ -1,9 +1,10 @@
-use std::{collections::HashSet, io::Write};
+use std::{collections::HashMap, io::Write, time::Instant};
 
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::{config::Region, Client};
 use clap::Parser;
 use hdrhistogram::Histogram;
+use rand::{seq::SliceRandom, SeedableRng};
 use rocksdb::IteratorMode;
 use s3kv::block::{BlockReader, Location, S3BlockReader, S3BlockReaderArgs};
 use tracing::debug;
@@ -23,6 +24,9 @@ struct Args {
 
     #[arg(long, default_value_t = 1_000_000)]
     block_size: usize,
+
+    #[arg(long, default_value_t = 0)]
+    cache_size: usize,
 }
 
 #[tokio::main]
@@ -59,31 +63,35 @@ async fn main() -> anyhow::Result<()> {
         bucket: args.bucket.clone(),
         prefix: format!("{}/block", args.prefix),
         block_size: args.block_size,
-        cache_size: 1,
+        cache_size: args.cache_size,
     });
 
-    let mut block_ids = HashSet::new();
+    let mut samples = HashMap::new();
     for entry in db.iterator(IteratorMode::Start) {
-        let (_, v) = entry?;
+        let (k, v) = entry?;
         let loc = Location::decode(&v)?;
-        block_ids.insert(loc.block_id);
+        samples.insert(loc.block_id, k.to_vec());
     }
+    let samples: Vec<Vec<u8>> = samples.into_values().collect();
 
+    let mut prng = rand::rngs::SmallRng::seed_from_u64(42);
+    let mut hist: Histogram<u32> = Histogram::new(5)?;
     loop {
-        for &block_id in &block_ids {
-            let _ = block_reader
-                .fetch(&Location {
-                    block_id,
-                    offset: 0,
-                })
-                .await?;
+        for _ in 0..100 {
+            let start = Instant::now();
+
+            if let Some(v) = db.get(samples.choose(&mut prng).unwrap())? {
+                let loc = Location::decode(&v)?;
+                let _ = block_reader.fetch(&loc).await?;
+            }
+
+            hist.record(start.elapsed().as_nanos() as u64).unwrap();
         }
-        let stats: &Histogram<u32> = block_reader.stats();
         debug!(
             "fetches={} mean={} p99={}",
-            stats.len(),
-            stats.mean(),
-            stats.value_at_quantile(0.99)
+            hist.len(),
+            hist.mean(),
+            hist.value_at_quantile(0.99)
         );
     }
 }
