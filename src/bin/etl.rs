@@ -68,7 +68,9 @@ async fn main() -> anyhow::Result<()> {
             .unwrap()
             .as_str()
             .unwrap();
-        db.put(primary_key, loc.encode())?;
+        let mut write_opts = rocksdb::WriteOptions::default();
+        write_opts.disable_wal(true);
+        db.put_opt(primary_key, loc.encode(), &write_opts)?;
     }
     block_writer.flush().await?;
     db.flush()?;
