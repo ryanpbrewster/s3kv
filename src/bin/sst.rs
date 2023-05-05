@@ -5,7 +5,6 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use rocksdb::SstFileWriter;
 use tracing::log::info;
 
 #[derive(Debug, Parser)]
@@ -20,6 +19,11 @@ enum Command {
     Cat {
         #[arg(long)]
         input: Vec<PathBuf>,
+    },
+    #[command(name = "compact")]
+    Compact {
+        #[arg(long)]
+        input: PathBuf,
     },
     #[command(name = "make-sst")]
     MakeSst {
@@ -45,11 +49,12 @@ fn main() -> anyhow::Result<()> {
 
     let opt = Opt::parse();
     match opt.cmd {
-        Command::Cat { input} => {
+        Command::Cat { input } => {
             for i in input {
                 cat_db(i)?;
             }
-        },
+        }
+        Command::Compact { input } => compact_db(input)?,
         Command::MakeSst { input, output } => make_sst(input, output)?,
         Command::Merge { input, output } => merge_ssts(input, output)?,
     };
@@ -60,11 +65,18 @@ fn cat_db(input: PathBuf) -> anyhow::Result<()> {
     let db = rocksdb::DB::open(&rocksdb::Options::default(), input)?;
     for item in db.iterator(rocksdb::IteratorMode::Start) {
         let (k, v) = item?;
-        info!("{}={:?}", std::str::from_utf8(&k)?, v);
+        println!("{}={:?}", std::str::from_utf8(&k)?, v);
     }
     Ok(())
 }
 
+fn compact_db(input: PathBuf) -> anyhow::Result<()> {
+    let db = rocksdb::DB::open(&rocksdb::Options::default(), input)?;
+    let mut opts = rocksdb::CompactOptions::default();
+    opts.set_bottommost_level_compaction(rocksdb::BottommostLevelCompaction::Force);
+    db.compact_range_opt::<Vec<u8>, Vec<u8>>(None, None, &opts);
+    Ok(())
+}
 
 fn make_sst(input: PathBuf, output: PathBuf) -> anyhow::Result<()> {
     let mut db_opts = rocksdb::Options::default();
@@ -91,7 +103,6 @@ fn make_sst(input: PathBuf, output: PathBuf) -> anyhow::Result<()> {
     db.finish()?;
     Ok(())
 }
-
 
 fn merge_ssts(inputs: Vec<PathBuf>, output: PathBuf) -> anyhow::Result<()> {
     let mut db_opts = rocksdb::Options::default();

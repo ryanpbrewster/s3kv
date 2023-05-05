@@ -7,15 +7,19 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.70"
+async-trait = "0.1.68"
 aws-config = "0.55.0"
 aws-sdk-s3 = "0.25.0"
 clap = { version = "4.2.1", features = ["derive"] }
 hex = "0.4.3"
+integer-encoding = "3.0.4"
 rand = { version = "0.8.5", features = ["small_rng"] }
 ring = "0.16.20"
 rocksdb = "0.20.1"
 serde = "1.0.159"
 serde_json = "1.0.95"
+tempfile = "3.5.0"
 tokio = { version = "1.27.0", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
+zstd = "0.12.3"

@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let mut db_opts = rocksdb::Options::default();
     db_opts.create_if_missing(true);
     db_opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
-    let mut db = rocksdb::DB::open(&db_opts, output)?;
+    let db = rocksdb::DB::open(&db_opts, output)?;
 
     let region_provider = RegionProviderChain::first_try(Region::new(region));
     let shared_config = aws_config::from_env().region(region_provider).load().await;
