@@ -6,7 +6,10 @@ use clap::Parser;
 use hdrhistogram::Histogram;
 use rand::{seq::SliceRandom, SeedableRng};
 use rocksdb::IteratorMode;
-use s3kv::block::{BlockReader, Location, S3BlockReader, S3BlockReaderArgs};
+use s3kv::{
+    blob::{BlobReader, S3Client},
+    block::{BlockReader, Location, S3BlockReader, S3BlockReaderArgs},
+};
 use tracing::debug;
 
 #[derive(Debug, Parser)]
@@ -38,6 +41,11 @@ async fn main() -> anyhow::Result<()> {
     let region_provider = RegionProviderChain::first_try(Region::new(args.region));
     let shared_config = aws_config::from_env().region(region_provider).load().await;
     let client = Client::new(&shared_config);
+    let blob = S3Client {
+        client,
+        bucket: args.bucket,
+        prefix: args.prefix,
+    };
 
     let db_dir = tempfile::TempDir::new()?;
     let mut db_opts = rocksdb::Options::default();
@@ -46,22 +54,19 @@ async fn main() -> anyhow::Result<()> {
     let db = rocksdb::DB::open(&db_opts, db_dir.path())?;
 
     debug!("downloading index default.sst");
-    let index_resp = client
-        .get_object()
-        .bucket(&args.bucket)
-        .key(format!("{}/index/default.sst", args.prefix))
-        .send()
-        .await?;
-    let index_body = index_resp.body.collect().await?;
+    let index_body = blob.must_get("index/default.sst").await?;
     let mut index_file = tempfile::NamedTempFile::new()?;
     let _ = index_file.write(&index_body.to_vec())?;
     debug!("ingesting index default.sst");
     db.ingest_external_file(vec![index_file.path()])?;
 
+    let blob_block_reader = {
+        let mut blob = blob.clone();
+        blob.prefix.push_str("/block");
+        blob
+    };
     let mut block_reader = S3BlockReader::new(S3BlockReaderArgs {
-        client: client.clone(),
-        bucket: args.bucket.clone(),
-        prefix: format!("{}/block", args.prefix),
+        client: blob_block_reader,
         block_size: args.block_size,
         cache_size: args.cache_size,
     });

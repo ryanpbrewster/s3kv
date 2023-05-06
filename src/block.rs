@@ -1,12 +1,13 @@
 use std::{io::Read, num::NonZeroUsize};
 
 use async_trait::async_trait;
-use aws_sdk_s3::primitives::ByteStream;
 
 use hex::ToHex;
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use lru::LruCache;
 use tracing::debug;
+
+use crate::blob::{BlobReader, BlobWriter, S3Client};
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub struct Location {
@@ -44,17 +45,13 @@ pub trait BlockReader {
 }
 
 pub struct S3BlockWriter {
-    underlying: aws_sdk_s3::Client,
+    underlying: S3Client,
     buf: Vec<u8>,
     block_size: usize,
-    bucket: String,
-    prefix: String,
     cur: Location,
 }
 pub struct S3BlockWriterArgs {
-    pub client: aws_sdk_s3::Client,
-    pub bucket: String,
-    pub prefix: String,
+    pub client: S3Client,
     pub block_size: usize,
 }
 impl S3BlockWriter {
@@ -63,8 +60,6 @@ impl S3BlockWriter {
             underlying: args.client,
             buf: Vec::with_capacity(args.block_size),
             block_size: args.block_size,
-            bucket: args.bucket,
-            prefix: args.prefix,
             cur: Location::default(),
         }
     }
@@ -92,13 +87,7 @@ impl BlockWriter for S3BlockWriter {
         self.buf.clear();
         let name: String = self.cur.block_id.encode_var_vec().encode_hex();
         debug!("pushing block {}", name);
-        self.underlying
-            .put_object()
-            .bucket(&self.bucket)
-            .key(format!("{}/{}", self.prefix, name))
-            .body(ByteStream::from(compressed))
-            .send()
-            .await?;
+        self.underlying.put(&name, &compressed).await?;
         self.cur = Location {
             block_id: self.cur.block_id + 1,
             offset: 0,
@@ -108,16 +97,12 @@ impl BlockWriter for S3BlockWriter {
 }
 
 pub struct S3BlockReader {
-    underlying: aws_sdk_s3::Client,
-    bucket: String,
-    prefix: String,
+    underlying: S3Client,
     block_size: usize,
     cache: LruCache<usize, Option<Vec<u8>>>,
 }
 pub struct S3BlockReaderArgs {
-    pub client: aws_sdk_s3::Client,
-    pub bucket: String,
-    pub prefix: String,
+    pub client: S3Client,
     pub block_size: usize,
     pub cache_size: usize,
 }
@@ -125,8 +110,6 @@ impl S3BlockReader {
     pub fn new(args: S3BlockReaderArgs) -> Self {
         Self {
             underlying: args.client,
-            bucket: args.bucket,
-            prefix: args.prefix,
             block_size: args.block_size,
             cache: LruCache::new(NonZeroUsize::new(args.cache_size).unwrap()),
         }
@@ -136,14 +119,7 @@ impl S3BlockReader {
         if block.is_none() {
             let name: String = block_id.encode_var_vec().encode_hex();
             debug!("fetching block {}", name);
-            let resp = self
-                .underlying
-                .get_object()
-                .bucket(&self.bucket)
-                .key(format!("{}/{}", self.prefix, name))
-                .send()
-                .await?;
-            let compressed = resp.body.collect().await?.to_vec();
+            let compressed = self.underlying.must_get(&name).await?;
             let mut buf = vec![0; self.block_size];
             let size = zstd::bulk::decompress_to_buffer(&compressed, &mut buf)?;
             buf.truncate(size);
