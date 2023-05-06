@@ -17,6 +17,7 @@ pub trait Blobstore {
         let blob = self.get(key).await?;
         Ok(blob.ok_or_else(|| anyhow!("no such blob: {}", key))?)
     }
+    fn resolved(self, dir: &str) -> Self;
 }
 
 struct LocalFilesystem {
@@ -27,7 +28,7 @@ struct LocalFilesystem {
 impl Blobstore for LocalFilesystem {
     async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let mut path = self.base.clone();
-        path.push(PathBuf::from_str(key)?);
+        path.push(key);
         let mut file = match File::open(path).await {
             Ok(file) => file,
             Err(err) => {
@@ -49,6 +50,11 @@ impl Blobstore for LocalFilesystem {
         let mut file = File::create(path).await?;
         file.write_all(blob).await?;
         Ok(())
+    }
+
+    fn resolved(mut self, dir: &str) -> Self {
+        self.base.push(dir);
+        self
     }
 }
 
@@ -127,5 +133,10 @@ impl Blobstore for S3Client {
             .send()
             .await?;
         Ok(())
+    }
+
+    fn resolved(mut self, dir: &str) -> Self {
+        self.prefix.push_str(dir);
+        self
     }
 }

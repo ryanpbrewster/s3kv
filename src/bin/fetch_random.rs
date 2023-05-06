@@ -60,13 +60,8 @@ async fn main() -> anyhow::Result<()> {
     debug!("ingesting index default.sst");
     db.ingest_external_file(vec![index_file.path()])?;
 
-    let blob_block_reader = {
-        let mut blob = blob.clone();
-        blob.prefix.push_str("/block");
-        blob
-    };
     let mut block_reader = S3BlockReader::new(S3BlockReaderArgs {
-        client: blob_block_reader,
+        client: blob.resolved("/block"),
         block_size: args.block_size,
         cache_size: args.cache_size,
     });
