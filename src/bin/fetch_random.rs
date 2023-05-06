@@ -7,7 +7,7 @@ use hdrhistogram::Histogram;
 use rand::{seq::SliceRandom, SeedableRng};
 use rocksdb::IteratorMode;
 use s3kv::{
-    blob::{BlobReader, S3Client},
+    blob::{Blobstore, S3Client},
     block::{BlockReader, Location, S3BlockReader, S3BlockReaderArgs},
 };
 use tracing::debug;

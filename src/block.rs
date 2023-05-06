@@ -7,7 +7,7 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use lru::LruCache;
 use tracing::debug;
 
-use crate::blob::{BlobReader, BlobWriter, S3Client};
+use crate::blob::{Blobstore, S3Client};
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub struct Location {

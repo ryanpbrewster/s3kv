@@ -5,7 +5,7 @@ use aws_sdk_s3::{config::Region, Client};
 use clap::Parser;
 use rocksdb::{IteratorMode, ReadOptions};
 use s3kv::{
-    blob::{BlobReader, S3Client},
+    blob::{Blobstore, S3Client},
     block::{BlockReader, Location, S3BlockReader, S3BlockReaderArgs},
 };
 use tracing::debug;

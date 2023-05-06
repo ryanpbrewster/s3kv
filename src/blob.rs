@@ -9,13 +9,10 @@ use tokio::{
 };
 
 #[async_trait]
-pub trait BlobWriter {
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()>;
-}
-
-#[async_trait]
-pub trait BlobReader {
+pub trait Blobstore {
     async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
+    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()>;
+
     async fn must_get(&self, key: &str) -> anyhow::Result<Vec<u8>> {
         let blob = self.get(key).await?;
         Ok(blob.ok_or_else(|| anyhow!("no such blob: {}", key))?)
@@ -27,18 +24,7 @@ struct LocalFilesystem {
 }
 
 #[async_trait]
-impl BlobWriter for LocalFilesystem {
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
-        let mut path = self.base.clone();
-        path.push(PathBuf::from_str(key)?);
-        let mut file = File::create(path).await?;
-        file.write_all(blob).await?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl BlobReader for LocalFilesystem {
+impl Blobstore for LocalFilesystem {
     async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let mut path = self.base.clone();
         path.push(PathBuf::from_str(key)?);
@@ -56,13 +42,21 @@ impl BlobReader for LocalFilesystem {
         file.read_to_end(&mut blob).await?;
         Ok(Some(blob))
     }
+
+    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+        let mut path = self.base.clone();
+        path.push(PathBuf::from_str(key)?);
+        let mut file = File::create(path).await?;
+        file.write_all(blob).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod test {
     use tempfile::tempdir;
 
-    use crate::blob::{BlobReader, BlobWriter, LocalFilesystem};
+    use crate::blob::{Blobstore, LocalFilesystem};
 
     #[tokio::test]
     async fn get_not_found() -> anyhow::Result<()> {
@@ -107,21 +101,7 @@ pub struct S3Client {
 }
 
 #[async_trait]
-impl BlobWriter for S3Client {
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(format!("{}/{}", self.prefix, key))
-            .body(ByteStream::from(blob.to_vec()))
-            .send()
-            .await?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl BlobReader for S3Client {
+impl Blobstore for S3Client {
     async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let resp = self
             .client
@@ -136,5 +116,16 @@ impl BlobReader for S3Client {
             Err(GetObjectError::NoSuchKey(_)) => Ok(None),
             Err(other) => Err(other.into()),
         }
+    }
+
+    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(format!("{}/{}", self.prefix, key))
+            .body(ByteStream::from(blob.to_vec()))
+            .send()
+            .await?;
+        Ok(())
     }
 }
