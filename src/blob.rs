@@ -1,8 +1,4 @@
-use std::{
-    path::PathBuf,
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use std::{io, num::NonZeroUsize, path::PathBuf, str::FromStr};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -12,16 +8,18 @@ use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
 };
+use tracing::debug;
 
 #[async_trait]
 pub trait Blobstore: Sync + Send {
-    async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()>;
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
+    async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()>;
 
-    async fn must_get(&self, key: &str) -> anyhow::Result<Vec<u8>> {
+    async fn must_get(&mut self, key: &str) -> anyhow::Result<Vec<u8>> {
         let blob = self.get(key).await?;
         Ok(blob.ok_or_else(|| anyhow!("no such blob: {}", key))?)
     }
+
     fn with_prefix(self, prefix: &str) -> Prefixed<Self>
     where
         Self: Sized,
@@ -29,6 +27,23 @@ pub trait Blobstore: Sync + Send {
         Prefixed {
             underlying: self,
             prefix: prefix.to_owned(),
+        }
+    }
+
+    fn with_compression(self) -> Compressed<Self>
+    where
+        Self: Sized,
+    {
+        Compressed { underlying: self }
+    }
+
+    fn with_caching(self, capacity: usize) -> Caching<Self>
+    where
+        Self: Sized,
+    {
+        Caching {
+            underlying: self,
+            cache: LruCache::new(NonZeroUsize::new(capacity).unwrap()),
         }
     }
 }
@@ -39,7 +54,7 @@ struct LocalFilesystem {
 
 #[async_trait]
 impl Blobstore for LocalFilesystem {
-    async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let mut path = self.base.clone();
         path.push(key);
         let mut file = match File::open(path).await {
@@ -57,7 +72,7 @@ impl Blobstore for LocalFilesystem {
         Ok(Some(blob))
     }
 
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+    async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
         let mut path = self.base.clone();
         path.push(PathBuf::from_str(key)?);
         let mut file = File::create(path).await?;
@@ -75,7 +90,8 @@ pub struct S3Client {
 
 #[async_trait]
 impl Blobstore for S3Client {
-    async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        debug!("fetching blob {}/{}", self.prefix, key);
         let resp = self
             .client
             .get_object()
@@ -91,7 +107,7 @@ impl Blobstore for S3Client {
         }
     }
 
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+    async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
         self.client
             .put_object()
             .bucket(&self.bucket)
@@ -109,59 +125,68 @@ pub struct Prefixed<B: Blobstore> {
 }
 #[async_trait]
 impl<B: Blobstore> Blobstore for Prefixed<B> {
-    async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         self.underlying
             .get(&format!("{}/{}", self.prefix, key))
             .await
     }
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+    async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
         self.underlying
             .put(&format!("{}/{}", self.prefix, key), blob)
             .await
     }
 }
 
-struct Caching<B: Blobstore> {
+pub struct Caching<B: Blobstore> {
     underlying: B,
-    cache: Arc<Mutex<LruCache<String, Option<Vec<u8>>>>>,
+    cache: LruCache<String, Option<Vec<u8>>>,
 }
 
 #[async_trait]
 impl<B: Blobstore> Blobstore for Caching<B> {
-    async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        if let Some(v) = self.cache.lock().unwrap().get(key) {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        if let Some(v) = self.cache.get(key) {
             return Ok(v.clone());
         }
         let v = self.underlying.get(key).await?;
-        Ok(self
-            .cache
-            .lock()
-            .unwrap()
-            .get_or_insert(key.to_owned(), || v)
-            .clone())
+        Ok(self.cache.get_or_insert(key.to_owned(), || v).clone())
     }
-    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+    async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
         self.underlying.put(key, blob).await
+    }
+}
+
+pub struct Compressed<B: Blobstore> {
+    underlying: B,
+}
+
+#[async_trait]
+impl<B: Blobstore> Blobstore for Compressed<B> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        debug!("decompressing blob {}", key);
+        let Some(blob) = self.underlying.get(key).await? else {
+            return Ok(None)
+        };
+        let decoded = zstd::decode_all(io::Cursor::new(blob))?;
+        Ok(Some(decoded))
+    }
+    async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+        let encoded = zstd::encode_all(io::Cursor::new(blob), 0)?;
+        self.underlying.put(key, &encoded).await?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::{
-        num::NonZeroUsize,
-        sync::{Arc, Mutex},
-    };
-
+    use crate::blob::{Blobstore, LocalFilesystem};
     use async_trait::async_trait;
-    use lru::LruCache;
     use tempfile::tempdir;
-
-    use crate::blob::{Blobstore, Caching, LocalFilesystem};
 
     #[tokio::test]
     async fn get_not_found() -> anyhow::Result<()> {
         let base = tempdir()?.into_path();
-        let fs = LocalFilesystem {
+        let mut fs = LocalFilesystem {
             base: base.as_path().to_path_buf(),
         };
         assert_eq!(fs.get("any-key").await?, None);
@@ -171,7 +196,7 @@ mod test {
     #[tokio::test]
     async fn garbage_path_errors() -> anyhow::Result<()> {
         let base = tempdir()?.into_path();
-        let fs = LocalFilesystem {
+        let mut fs = LocalFilesystem {
             base: base.as_path().to_path_buf(),
         };
         assert!(fs.get("/////").await.is_err());
@@ -181,7 +206,7 @@ mod test {
     #[tokio::test]
     async fn round_trip_test() -> anyhow::Result<()> {
         let base = tempdir()?.into_path();
-        let fs = LocalFilesystem {
+        let mut fs = LocalFilesystem {
             base: base.as_path().to_path_buf(),
         };
         let expected = "Hello, World!".as_bytes().to_vec();
@@ -194,51 +219,40 @@ mod test {
 
     #[derive(Default, Clone)]
     struct Spystore {
-        fetches: Arc<Mutex<Vec<String>>>,
+        fetches: Vec<String>,
     }
     #[async_trait]
     impl Blobstore for Spystore {
-        async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-            self.fetches.lock().unwrap().push(key.to_owned());
+        async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            self.fetches.push(key.to_owned());
             Ok(None)
         }
-        async fn put(&self, _: &str, _: &[u8]) -> anyhow::Result<()> {
+        async fn put(&mut self, _: &str, _: &[u8]) -> anyhow::Result<()> {
             Ok(())
         }
     }
     #[tokio::test]
     async fn caching_prevents_fetches() -> anyhow::Result<()> {
         let blob = Spystore::default();
-        let cache = Caching {
-            underlying: blob,
-            cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1).unwrap()))),
-        };
+        let mut cache = blob.with_caching(1);
 
         let _ = cache.get("foo").await;
-        assert_eq!(*cache.underlying.fetches.lock().unwrap(), vec!["foo"]);
+        assert_eq!(cache.underlying.fetches, vec!["foo"]);
 
         let _ = cache.get("foo").await;
-        assert_eq!(*cache.underlying.fetches.lock().unwrap(), vec!["foo"]);
+        assert_eq!(cache.underlying.fetches, vec!["foo"]);
 
         let _ = cache.get("bar").await;
-        assert_eq!(
-            *cache.underlying.fetches.lock().unwrap(),
-            vec!["foo", "bar"]
-        );
+        assert_eq!(cache.underlying.fetches, vec!["foo", "bar"]);
         Ok(())
     }
 
     #[tokio::test]
     async fn prefix_smoke_test() -> anyhow::Result<()> {
-        let blob = Spystore::default();
+        let mut blob = Spystore::default().with_prefix("foo").with_prefix("bar");
 
-        let _ = blob
-            .clone()
-            .with_prefix("foo")
-            .with_prefix("bar")
-            .get("baz")
-            .await;
-        assert_eq!(*blob.fetches.lock().unwrap(), vec!["foo/bar/baz"]);
+        let _ = blob.get("baz").await;
+        assert_eq!(blob.underlying.underlying.fetches, vec!["foo/bar/baz"]);
         Ok(())
     }
 }

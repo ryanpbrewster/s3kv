@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     let region_provider = RegionProviderChain::first_try(Region::new(args.region));
     let shared_config = aws_config::from_env().region(region_provider).load().await;
     let client = Client::new(&shared_config);
-    let blob = S3Client {
+    let mut blob = S3Client {
         client,
         bucket: args.bucket,
         prefix: args.prefix,
@@ -61,9 +61,7 @@ async fn main() -> anyhow::Result<()> {
     db.ingest_external_file(vec![index_file.path()])?;
 
     let mut block_reader = S3BlockReader::new(S3BlockReaderArgs {
-        client: Box::new(blob.with_prefix("/block")),
-        block_size: args.block_size,
-        cache_size: args.cache_size,
+        client: Box::new(blob.with_prefix("block")),
     });
 
     let mut samples = HashMap::new();
