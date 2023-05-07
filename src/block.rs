@@ -97,12 +97,12 @@ impl BlockWriter for S3BlockWriter {
 }
 
 pub struct S3BlockReader {
-    underlying: S3Client,
+    underlying: Box<dyn Blobstore>,
     block_size: usize,
     cache: LruCache<usize, Option<Vec<u8>>>,
 }
 pub struct S3BlockReaderArgs {
-    pub client: S3Client,
+    pub client: Box<dyn Blobstore>,
     pub block_size: usize,
     pub cache_size: usize,
 }

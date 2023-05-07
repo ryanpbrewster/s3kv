@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     db.ingest_external_file(vec![index_file.path()])?;
 
     let mut block_reader = S3BlockReader::new(S3BlockReaderArgs {
-        client: blob.resolved("/block"),
+        client: Box::new(blob.with_prefix("/block")),
         block_size: args.block_size,
         cache_size: 1,
     });

@@ -1,15 +1,20 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use aws_sdk_s3::{operation::get_object::GetObjectError, primitives::ByteStream};
+use lru::LruCache;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
 };
 
 #[async_trait]
-pub trait Blobstore {
+pub trait Blobstore: Sync + Send {
     async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
     async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()>;
 
@@ -17,7 +22,15 @@ pub trait Blobstore {
         let blob = self.get(key).await?;
         Ok(blob.ok_or_else(|| anyhow!("no such blob: {}", key))?)
     }
-    fn resolved(self, dir: &str) -> Self;
+    fn with_prefix(self, prefix: &str) -> Prefixed<Self>
+    where
+        Self: Sized,
+    {
+        Prefixed {
+            underlying: self,
+            prefix: prefix.to_owned(),
+        }
+    }
 }
 
 struct LocalFilesystem {
@@ -50,11 +63,6 @@ impl Blobstore for LocalFilesystem {
         let mut file = File::create(path).await?;
         file.write_all(blob).await?;
         Ok(())
-    }
-
-    fn resolved(mut self, dir: &str) -> Self {
-        self.base.push(dir);
-        self
     }
 }
 
@@ -134,9 +142,46 @@ impl Blobstore for S3Client {
             .await?;
         Ok(())
     }
+}
 
-    fn resolved(mut self, dir: &str) -> Self {
-        self.prefix.push_str(dir);
-        self
+pub struct Prefixed<B: Blobstore> {
+    underlying: B,
+    prefix: String,
+}
+#[async_trait]
+impl<B: Blobstore> Blobstore for Prefixed<B> {
+    async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        self.underlying
+            .get(&format!("{}/{}", self.prefix, key))
+            .await
+    }
+    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+        self.underlying
+            .put(&format!("{}/{}", self.prefix, key), blob)
+            .await
+    }
+}
+
+struct Caching {
+    underlying: Box<dyn Blobstore>,
+    cache: Arc<Mutex<LruCache<String, Option<Vec<u8>>>>>,
+}
+
+#[async_trait]
+impl Blobstore for Caching {
+    async fn get(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        if let Some(v) = self.cache.lock().unwrap().get(key) {
+            return Ok(v.clone());
+        }
+        let v = self.underlying.get(key).await?;
+        Ok(self
+            .cache
+            .lock()
+            .unwrap()
+            .get_or_insert(key.to_owned(), || v)
+            .clone())
+    }
+    async fn put(&self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
+        self.underlying.put(key, blob).await
     }
 }
