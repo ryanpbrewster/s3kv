@@ -4,17 +4,17 @@ From a c7g.xlarge machine in the same region:
 
 fetch_random on ~1 MB blocks (between 112-1700 KB, depending on compresison ratio):
 ```
-2023-05-05T21:50:50.909048Z DEBUG fetch_random: fetches=10000 mean=30733.28us p99=74133us
+2023-05-08T16:34:36.944068Z DEBUG fetch_random: fetches=10000 mean=32796.0us p99=80719.4us
 ```
 
 If we simulate a 50% block cache hit ratio:
 ```
-2023-05-05T22:01:15.246500Z DEBUG fetch_random: fetches=5000 mean=15470.14us p99=69138us
+2023-05-08T16:39:39.602732Z DEBUG fetch_random: fetches=10000 mean=15727.0us p99=64820.7us
 ```
 
-we get roughly linear speedup — fetching from S3 is effectively 100% of the observable latency.
+we get roughly linear speedup — fetching from S3 is >99% of the observable latency.
 
 As expected, if we simulate a 100% block cache hit rate, performance is very good:
 ```
-2023-05-05T22:11:04.745660Z DEBUG fetch_random: fetches=100000 mean=6.962us p99=6.640us
+2023-05-08T16:28:35.349016Z DEBUG fetch_random: fetches=1000000 mean=2.7us p99=5.4us
 ```

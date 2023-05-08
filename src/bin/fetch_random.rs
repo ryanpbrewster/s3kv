@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
     let mut db_opts = rocksdb::Options::default();
     db_opts.create_if_missing(true);
     db_opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
+    db_opts.set_use_direct_reads(true);
     let db = rocksdb::DB::open(&db_opts, db_dir.path())?;
 
     debug!("downloading index default.sst");
