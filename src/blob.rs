@@ -1,9 +1,10 @@
-use std::{io, num::NonZeroUsize, path::PathBuf, str::FromStr};
+use std::{borrow::Cow, io, num::NonZeroUsize, path::PathBuf, str::FromStr};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use aws_sdk_s3::{operation::get_object::GetObjectError, primitives::ByteStream};
 use lru::LruCache;
+use once_cell::sync::OnceCell;
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -11,11 +12,12 @@ use tokio::{
 use tracing::debug;
 
 #[async_trait]
-pub trait Blobstore: Sync + Send {
-    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
+pub trait Blobstore: Sync + Send + std::fmt::Debug {
+    async fn get<'a>(&'a mut self, key: &str) -> anyhow::Result<Option<Cow<'a, [u8]>>>;
     async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()>;
 
-    async fn must_get(&mut self, key: &str) -> anyhow::Result<Vec<u8>> {
+    async fn must_get(&mut self, key: &str) -> anyhow::Result<Cow<[u8]>> {
+        debug!("{:?} must_get({})", self, key);
         let blob = self.get(key).await?;
         Ok(blob.ok_or_else(|| anyhow!("no such blob: {}", key))?)
     }
@@ -37,7 +39,7 @@ pub trait Blobstore: Sync + Send {
         Compressed { underlying: self }
     }
 
-    fn with_caching(self, capacity: usize) -> Caching<Self>
+    fn with_caching<'a>(self, capacity: usize) -> Caching<Self>
     where
         Self: Sized,
     {
@@ -48,13 +50,14 @@ pub trait Blobstore: Sync + Send {
     }
 }
 
+#[derive(Debug)]
 struct LocalFilesystem {
     pub base: PathBuf,
 }
 
 #[async_trait]
 impl Blobstore for LocalFilesystem {
-    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
         let mut path = self.base.clone();
         path.push(key);
         let mut file = match File::open(path).await {
@@ -69,7 +72,7 @@ impl Blobstore for LocalFilesystem {
         };
         let mut blob = Vec::new();
         file.read_to_end(&mut blob).await?;
-        Ok(Some(blob))
+        Ok(Some(Cow::Owned(blob)))
     }
 
     async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
@@ -81,7 +84,7 @@ impl Blobstore for LocalFilesystem {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct S3Client {
     pub client: aws_sdk_s3::Client,
     pub bucket: String,
@@ -90,7 +93,7 @@ pub struct S3Client {
 
 #[async_trait]
 impl Blobstore for S3Client {
-    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
         debug!("fetching blob {}/{}", self.prefix, key);
         let resp = self
             .client
@@ -101,7 +104,7 @@ impl Blobstore for S3Client {
             .await
             .map_err(|e| e.into_service_error());
         match resp {
-            Ok(output) => Ok(Some(output.body.collect().await?.to_vec())),
+            Ok(output) => Ok(Some(Cow::Owned(output.body.collect().await?.to_vec()))),
             Err(GetObjectError::NoSuchKey(_)) => Ok(None),
             Err(other) => Err(other.into()),
         }
@@ -119,13 +122,15 @@ impl Blobstore for S3Client {
     }
 }
 
+#[derive(Debug)]
 pub struct Prefixed<B: Blobstore> {
     underlying: B,
     prefix: String,
 }
 #[async_trait]
 impl<B: Blobstore> Blobstore for Prefixed<B> {
-    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
+        debug!("{:?} get({})", self, key);
         self.underlying
             .get(&format!("{}/{}", self.prefix, key))
             .await
@@ -137,38 +142,49 @@ impl<B: Blobstore> Blobstore for Prefixed<B> {
     }
 }
 
+#[derive(Debug)]
 pub struct Caching<B: Blobstore> {
     underlying: B,
-    cache: LruCache<String, Option<Vec<u8>>>,
+    cache: LruCache<String, OnceCell<Option<Vec<u8>>>>,
 }
 
 #[async_trait]
 impl<B: Blobstore> Blobstore for Caching<B> {
-    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        if let Some(v) = self.cache.get(key) {
-            return Ok(v.clone());
+    async fn get<'a>(&'a mut self, key: &str) -> anyhow::Result<Option<Cow<'a, [u8]>>> {
+        debug!("{:?} get({})", self, key);
+        let cell = self.cache.get_or_insert(key.to_owned(), || OnceCell::new());
+        if let Some(v) = cell.get() {
+            let wrapped = v.as_ref().map(|inner| Cow::Borrowed(inner.as_slice()));
+            return Ok(wrapped);
         }
-        let v = self.underlying.get(key).await?;
-        Ok(self.cache.get_or_insert(key.to_owned(), || v).clone())
+        let v: Option<Vec<u8>> = self.underlying.get(key).await?.map(|v| match v {
+            Cow::Borrowed(v) => v.to_vec(),
+            Cow::Owned(v) => v,
+        });
+        Ok(cell
+            .get_or_init(|| v)
+            .as_ref()
+            .map(|inner| Cow::Borrowed(inner.as_slice())))
     }
     async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
         self.underlying.put(key, blob).await
     }
 }
 
+#[derive(Debug)]
 pub struct Compressed<B: Blobstore> {
     underlying: B,
 }
 
 #[async_trait]
 impl<B: Blobstore> Blobstore for Compressed<B> {
-    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
         debug!("decompressing blob {}", key);
         let Some(blob) = self.underlying.get(key).await? else {
             return Ok(None)
         };
         let decoded = zstd::decode_all(io::Cursor::new(blob))?;
-        Ok(Some(decoded))
+        Ok(Some(Cow::Owned(decoded)))
     }
     async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()> {
         let encoded = zstd::encode_all(io::Cursor::new(blob), 0)?;
@@ -179,6 +195,8 @@ impl<B: Blobstore> Blobstore for Compressed<B> {
 
 #[cfg(test)]
 mod test {
+    use std::borrow::Cow;
+
     use crate::blob::{Blobstore, LocalFilesystem};
     use async_trait::async_trait;
     use tempfile::tempdir;
@@ -213,17 +231,17 @@ mod test {
 
         fs.put("my-file.txt", &expected).await?;
         let actual = fs.get("my-file.txt").await?;
-        assert_eq!(actual, Some(expected));
+        assert_eq!(actual, Some(Cow::Borrowed(expected.as_slice())));
         Ok(())
     }
 
-    #[derive(Default, Clone)]
+    #[derive(Default, Clone, Debug)]
     struct Spystore {
         fetches: Vec<String>,
     }
     #[async_trait]
     impl Blobstore for Spystore {
-        async fn get(&mut self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
             self.fetches.push(key.to_owned());
             Ok(None)
         }

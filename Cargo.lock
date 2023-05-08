@@ -1571,6 +1571,7 @@ dependencies = [
  "hex",
  "integer-encoding",
  "lru",
+ "once_cell",
  "rand",
  "ring",
  "rocksdb",
