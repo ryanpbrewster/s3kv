@@ -111,7 +111,6 @@ impl S3BlockReader {
 impl BlockReader for S3BlockReader {
     async fn fetch(&mut self, loc: &Location) -> anyhow::Result<Vec<u8>> {
         let name: String = loc.block_id.encode_var_vec().encode_hex();
-        debug!("fetching block {}", loc.block_id);
         let block = self.underlying.must_get(&name).await?;
 
         let mut cursor = Cursor::new(block);

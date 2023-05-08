@@ -17,7 +17,6 @@ pub trait Blobstore: Sync + Send + std::fmt::Debug {
     async fn put(&mut self, key: &str, blob: &[u8]) -> anyhow::Result<()>;
 
     async fn must_get(&mut self, key: &str) -> anyhow::Result<Cow<[u8]>> {
-        debug!("{:?} must_get({})", self, key);
         let blob = self.get(key).await?;
         Ok(blob.ok_or_else(|| anyhow!("no such blob: {}", key))?)
     }
@@ -130,7 +129,6 @@ pub struct Prefixed<B: Blobstore> {
 #[async_trait]
 impl<B: Blobstore> Blobstore for Prefixed<B> {
     async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
-        debug!("{:?} get({})", self, key);
         self.underlying
             .get(&format!("{}/{}", self.prefix, key))
             .await
@@ -151,7 +149,6 @@ pub struct Caching<B: Blobstore> {
 #[async_trait]
 impl<B: Blobstore> Blobstore for Caching<B> {
     async fn get<'a>(&'a mut self, key: &str) -> anyhow::Result<Option<Cow<'a, [u8]>>> {
-        debug!("{:?} get({})", self, key);
         let cell = self.cache.get_or_insert(key.to_owned(), || OnceCell::new());
         if let Some(v) = cell.get() {
             let wrapped = v.as_ref().map(|inner| Cow::Borrowed(inner.as_slice()));
