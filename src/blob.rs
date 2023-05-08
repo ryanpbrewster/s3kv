@@ -140,6 +140,13 @@ impl<B: Blobstore> Blobstore for Prefixed<B> {
     }
 }
 
+// This implementation does some annoying things with `once_cell` and `Cow` to avoid cloning
+// the underlying blob every time it hands out the cached data. This can make a huge difference.
+// When scanning ~250k items (stored across 16 blocks), these shared-reference shenanigans reduced
+// runtime from
+//    just scan  46.35s user 0.41s system 92% cpu 50.583 total
+// to
+//    just scan  0.60s user 0.29s system 11% cpu 7.749 total
 #[derive(Debug)]
 pub struct Caching<B: Blobstore> {
     underlying: B,
