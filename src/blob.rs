@@ -38,7 +38,7 @@ pub trait Blobstore: Sync + Send + std::fmt::Debug {
         Compressed { underlying: self }
     }
 
-    fn with_caching<'a>(self, capacity: usize) -> Caching<Self>
+    fn with_caching(self, capacity: usize) -> Caching<Self>
     where
         Self: Sized,
     {
@@ -156,7 +156,7 @@ pub struct Caching<B: Blobstore> {
 #[async_trait]
 impl<B: Blobstore> Blobstore for Caching<B> {
     async fn get<'a>(&'a mut self, key: &str) -> anyhow::Result<Option<Cow<'a, [u8]>>> {
-        let cell = self.cache.get_or_insert(key.to_owned(), || OnceCell::new());
+        let cell = self.cache.get_or_insert(key.to_owned(), OnceCell::new);
         if let Some(v) = cell.get() {
             let wrapped = v.as_ref().map(|inner| Cow::Borrowed(inner.as_slice()));
             return Ok(wrapped);

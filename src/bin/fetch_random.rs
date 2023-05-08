@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     debug!("downloading index default.sst");
     let index_body = blob.must_get("index/default.sst").await?;
     let mut index_file = tempfile::NamedTempFile::new()?;
-    let _ = index_file.write(&index_body.to_vec())?;
+    let _ = index_file.write(&index_body)?;
     debug!("ingesting index default.sst");
     db.ingest_external_file(vec![index_file.path()])?;
 
