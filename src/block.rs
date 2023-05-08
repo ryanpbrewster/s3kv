@@ -6,7 +6,7 @@ use hex::ToHex;
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use tracing::debug;
 
-use crate::blob::{Blobstore, S3Client};
+use crate::blob::Blobstore;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub struct Location {
@@ -44,13 +44,13 @@ pub trait BlockReader {
 }
 
 pub struct S3BlockWriter {
-    underlying: S3Client,
+    underlying: Box<dyn Blobstore>,
     buf: Vec<u8>,
     block_size: usize,
     cur: Location,
 }
 pub struct S3BlockWriterArgs {
-    pub client: S3Client,
+    pub client: Box<dyn Blobstore>,
     pub block_size: usize,
 }
 impl S3BlockWriter {

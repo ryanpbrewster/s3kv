@@ -87,18 +87,17 @@ impl Blobstore for LocalFilesystem {
 pub struct S3Client {
     pub client: aws_sdk_s3::Client,
     pub bucket: String,
-    pub prefix: String,
 }
 
 #[async_trait]
 impl Blobstore for S3Client {
     async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
-        debug!("fetching blob {}/{}", self.prefix, key);
+        debug!("fetching blob {}", key);
         let resp = self
             .client
             .get_object()
             .bucket(&self.bucket)
-            .key(format!("{}/{}", self.prefix, key))
+            .key(key)
             .send()
             .await
             .map_err(|e| e.into_service_error());
@@ -113,7 +112,7 @@ impl Blobstore for S3Client {
         self.client
             .put_object()
             .bucket(&self.bucket)
-            .key(format!("{}/{}", self.prefix, key))
+            .key(key)
             .body(ByteStream::from(blob.to_vec()))
             .send()
             .await?;
@@ -183,10 +182,10 @@ pub struct Compressed<B: Blobstore> {
 #[async_trait]
 impl<B: Blobstore> Blobstore for Compressed<B> {
     async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
-        debug!("decompressing blob {}", key);
         let Some(blob) = self.underlying.get(key).await? else {
             return Ok(None)
         };
+        debug!("decompressing blob {}", key);
         let decoded = zstd::decode_all(io::Cursor::new(blob))?;
         Ok(Some(Cow::Owned(decoded)))
     }

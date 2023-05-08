@@ -9,7 +9,7 @@ use aws_sdk_s3::{config::Region, primitives::ByteStream, Client};
 use clap::Parser;
 use rocksdb::SstFileWriter;
 use s3kv::{
-    blob::S3Client,
+    blob::{Blobstore, S3Client},
     block::{BlockWriter, S3BlockWriter, S3BlockWriterArgs},
 };
 use tracing::{debug, log::info};
@@ -51,11 +51,14 @@ async fn main() -> anyhow::Result<()> {
     let db = rocksdb::DB::open(&db_opts, db_dir.path())?;
 
     let mut block_writer = S3BlockWriter::new(S3BlockWriterArgs {
-        client: S3Client {
-            client: client.clone(),
-            bucket: args.bucket.clone(),
-            prefix: format!("{}/block", args.prefix),
-        },
+        client: Box::new(
+            S3Client {
+                client: client.clone(),
+                bucket: args.bucket.clone(),
+            }
+            .with_compression()
+            .with_prefix(&format!("{}/block", args.prefix)),
+        ),
         block_size: args.block_size,
     });
 

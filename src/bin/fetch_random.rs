@@ -44,8 +44,8 @@ async fn main() -> anyhow::Result<()> {
     let mut blob = S3Client {
         client,
         bucket: args.bucket,
-        prefix: args.prefix,
-    };
+    }
+    .with_compression();
 
     let db_dir = tempfile::TempDir::new()?;
     let mut db_opts = rocksdb::Options::default();
@@ -56,7 +56,8 @@ async fn main() -> anyhow::Result<()> {
     debug!("downloading index default.sst");
     let index_body = blob.must_get("index/default.sst").await?;
     let mut index_file = tempfile::NamedTempFile::new()?;
-    let _ = index_file.write(&index_body)?;
+    index_file.write_all(&index_body)?;
+    index_file.flush()?;
     debug!("ingesting index default.sst");
     db.ingest_external_file(vec![index_file.path()])?;
 
@@ -83,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
                 let _ = block_reader.fetch(&loc).await?;
             }
 
-            hist.record(start.elapsed().as_nanos() as u64).unwrap();
+            hist.record(start.elapsed().as_nanos() as u64)?;
         }
         debug!(
             "fetches={} mean={} p99={}",

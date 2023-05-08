@@ -51,8 +51,8 @@ async fn main() -> anyhow::Result<()> {
     let mut blob = S3Client {
         client,
         bucket: args.bucket,
-        prefix: args.prefix,
-    };
+    }
+    .with_prefix(&args.prefix);
 
     let db_dir = tempfile::TempDir::new()?;
     let mut db_opts = rocksdb::Options::default();
