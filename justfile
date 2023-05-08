@@ -8,4 +8,4 @@ scan:
   source .aws/credentials && RUST_LOG=scan=debug,s3kv=debug cargo run --release --bin scan -- --region us-west-2 --bucket rpbtest --prefix "2023-05-08T15:55:27+00:00" --block-size 10000000 --quiet
 
 fetch-random:
-  source .aws/credentials && RUST_LOG=fetch_random=debug,s3kv=debug cargo run --release --bin fetch_random -- --region us-west-2 --bucket rpbtest --prefix "2023-05-08T15:55:27+00:00" --block-size 10000000
+  source .aws/credentials && RUST_LOG=fetch_random=debug cargo run --release --bin fetch_random -- --region us-west-2 --bucket rpbtest --prefix "2023-05-08T15:55:27+00:00" --block-size 10000000

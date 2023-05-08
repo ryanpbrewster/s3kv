@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
         client,
         bucket: args.bucket,
     }
-    .with_compression();
+    .with_prefix(&args.prefix);
 
     let db_dir = tempfile::TempDir::new()?;
     let mut db_opts = rocksdb::Options::default();
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
     db.ingest_external_file(vec![index_file.path()])?;
 
     let mut block_reader = S3BlockReader::new(S3BlockReaderArgs {
-        client: Box::new(blob.with_prefix("block")),
+        client: Box::new(blob.with_prefix("block").with_compression()),
     });
 
     let mut samples = HashMap::new();
@@ -87,10 +87,10 @@ async fn main() -> anyhow::Result<()> {
             hist.record(start.elapsed().as_nanos() as u64)?;
         }
         debug!(
-            "fetches={} mean={} p99={}",
+            "fetches={} mean={:.1}us p99={:.1}us",
             hist.len(),
-            hist.mean(),
-            hist.value_at_quantile(0.99)
+            hist.mean() * 1e-3,
+            hist.value_at_quantile(0.99) as f64 * 1e-3
         );
     }
 }
