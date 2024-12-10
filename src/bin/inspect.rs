@@ -5,7 +5,7 @@
 
 #![allow(clippy::result_large_err)]
 
-use aws_config::meta::region::RegionProviderChain;
+use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use aws_sdk_s3::{config::Region, meta::PKG_VERSION, Client, Error};
 use clap::Parser;
 
@@ -29,7 +29,7 @@ struct Opt {
 async fn show_objects(client: &Client, bucket: &str) -> Result<(), Error> {
     let resp = client.list_objects_v2().bucket(bucket).send().await?;
 
-    for object in resp.contents().unwrap_or_default() {
+    for object in resp.contents() {
         println!("{}", object.key().unwrap_or_default());
     }
 
@@ -71,7 +71,10 @@ async fn main() -> Result<(), Error> {
         println!();
     }
 
-    let shared_config = aws_config::from_env().region(region_provider).load().await;
+    let shared_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
+        .region(region_provider)
+        .load()
+        .await;
     let client = Client::new(&shared_config);
 
     show_objects(&client, &bucket).await

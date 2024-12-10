@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use tracing::log::info;
+use tracing::info;
 
 #[derive(Debug, Parser)]
 struct Opt {

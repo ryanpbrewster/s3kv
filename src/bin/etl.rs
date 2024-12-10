@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use aws_config::meta::region::RegionProviderChain;
+use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use aws_sdk_s3::{config::Region, primitives::ByteStream, Client};
 use clap::Parser;
 use rocksdb::SstFileWriter;
@@ -12,7 +12,7 @@ use s3kv::{
     blob::{Blobstore, S3Client},
     block::{BlockWriter, S3BlockWriter, S3BlockWriterArgs},
 };
-use tracing::{debug, log::info};
+use tracing::{debug, info};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -41,7 +41,10 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::try_parse()?;
 
     let region_provider = RegionProviderChain::first_try(Region::new(args.region));
-    let shared_config = aws_config::from_env().region(region_provider).load().await;
+    let shared_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
+        .region(region_provider)
+        .load()
+        .await;
     let client = Client::new(&shared_config);
 
     let db_dir = tempfile::TempDir::new()?;

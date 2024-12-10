@@ -50,7 +50,7 @@ pub trait Blobstore: Sync + Send + std::fmt::Debug {
 }
 
 #[derive(Debug)]
-struct LocalFilesystem {
+pub struct LocalFilesystem {
     pub base: PathBuf,
 }
 
@@ -183,7 +183,7 @@ pub struct Compressed<B: Blobstore> {
 impl<B: Blobstore> Blobstore for Compressed<B> {
     async fn get(&mut self, key: &str) -> anyhow::Result<Option<Cow<[u8]>>> {
         let Some(blob) = self.underlying.get(key).await? else {
-            return Ok(None)
+            return Ok(None);
         };
         debug!("decompressing blob {}", key);
         let decoded = zstd::decode_all(io::Cursor::new(blob))?;
